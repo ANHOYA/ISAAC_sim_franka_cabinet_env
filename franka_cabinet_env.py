@@ -248,19 +248,28 @@ class FrankaCabinetEnv(DirectRLEnv):
         finger_pose = torch.zeros(7, device=self.device)
         finger_pose[0:3] = (lfinger_pose[0:3] + rfinger_pose[0:3]) / 2.0
         finger_pose[3:7] = lfinger_pose[3:7]
+
+        #손가락 기준 좌표계로 맞춰주는 작업임
         hand_pose_inv_rot, hand_pose_inv_pos = tf_inverse(hand_pose[3:7], hand_pose[0:3])
 
+        #손이 그립하는 기준 좌표로 처리해주는 작업
         robot_local_grasp_pose_rot, robot_local_pose_pos = tf_combine(
             hand_pose_inv_rot, hand_pose_inv_pos, finger_pose[3:7], finger_pose[0:3]
         )
+
+        #손가락 4cm 옮겨주는 보정 과정
         robot_local_pose_pos += torch.tensor([0, 0.04, 0], device=self.device)
+
+        #환경 수 만큼 grasp에 관한 위치를 환경수만큼 복사
         self.robot_local_grasp_pos = robot_local_pose_pos.repeat((self.num_envs, 1))
         self.robot_local_grasp_rot = robot_local_grasp_pose_rot.repeat((self.num_envs, 1))
 
+        #서랍손잡이 위치도 환경수만큼 복사
         drawer_local_grasp_pose = torch.tensor([0.3, 0.01, 0.0, 1.0, 0.0, 0.0, 0.0], device=self.device)
         self.drawer_local_grasp_pos = drawer_local_grasp_pose[0:3].repeat((self.num_envs, 1))
         self.drawer_local_grasp_rot = drawer_local_grasp_pose[3:7].repeat((self.num_envs, 1))
 
+        #손잡이랑 그리퍼랑 축 정렬. 잡을 수 있게.
         self.gripper_forward_axis = torch.tensor([0, 0, 1], device=self.device, dtype=torch.float32).repeat(
             (self.num_envs, 1)
         )
@@ -274,6 +283,7 @@ class FrankaCabinetEnv(DirectRLEnv):
             (self.num_envs, 1)
         )
 
+        #7번째 관절에 그리퍼가 설치되니까 panda_link7이 handlink임
         self.hand_link_idx = self._robot.find_bodies("panda_link7")[0][0]
         self.left_finger_link_idx = self._robot.find_bodies("panda_leftfinger")[0][0]
         self.right_finger_link_idx = self._robot.find_bodies("panda_rightfinger")[0][0]
@@ -285,6 +295,8 @@ class FrankaCabinetEnv(DirectRLEnv):
         self.drawer_grasp_pos = torch.zeros((self.num_envs, 3), device=self.device)
 
     def _setup_scene(self):
+        #_로 시작하는 변수는 내부에서만 접근하라는 약속
+        # TMI : from module import *를 사용할 때 _로 시작하는 이름은 import에서 제외됨
         self._robot = Articulation(self.cfg.robot)
         self._cabinet = Articulation(self.cfg.cabinet)
         self.scene.articulations["robot"] = self._robot
