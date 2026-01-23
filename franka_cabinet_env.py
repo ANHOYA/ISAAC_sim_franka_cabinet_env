@@ -297,6 +297,7 @@ class FrankaCabinetEnv(DirectRLEnv):
     def _setup_scene(self):
         #_로 시작하는 변수는 내부에서만 접근하라는 약속
         # TMI : from module import *를 사용할 때 _로 시작하는 이름은 import에서 제외됨
+        # 환경에 있는 로봇, 캐비넷, 지형 세개를 불러오는 과정
         self._robot = Articulation(self.cfg.robot)
         self._cabinet = Articulation(self.cfg.cabinet)
         self.scene.articulations["robot"] = self._robot
@@ -318,9 +319,13 @@ class FrankaCabinetEnv(DirectRLEnv):
 
     # pre-physics step calls
 
+    #apply action을 수행하기 전에 정책을 통해 도출된 action을 안정화하는 과정
     def _pre_physics_step(self, actions: torch.Tensor):
+        #과도한 action에 의해 불안정해지는 상황을 방지하기 위해 -1~1 사이로 값을 제한
         self.actions = actions.clone().clamp(-1.0, 1.0)
+        #관절을 얼만큼 움직일건지...
         targets = self.robot_dof_targets + self.robot_dof_speed_scales * self.dt * self.actions * self.cfg.action_scale
+        #관절 한계 제한
         self.robot_dof_targets[:] = torch.clamp(targets, self.robot_dof_lower_limits, self.robot_dof_upper_limits)
 
     def _apply_action(self):
@@ -328,11 +333,13 @@ class FrankaCabinetEnv(DirectRLEnv):
 
     # post-physics step calls
 
+    # 성공조건을 만족해서 끝난건지 or 최대 에피소드에 도달해서 끝난것인지?
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         terminated = self._cabinet.data.joint_pos[:, 3] > 0.39
         truncated = self.episode_length_buf >= self.max_episode_length - 1
         return terminated, truncated
 
+    #보상 계산
     def _get_rewards(self) -> torch.Tensor:
         # Refresh the intermediate values after the physics steps
         self._compute_intermediate_values()
@@ -361,6 +368,9 @@ class FrankaCabinetEnv(DirectRLEnv):
             self._robot.data.joint_pos,
         )
 
+    # ??????????????/???????
+    # 여기서 env_ids 가 나오는데 먼저 에피소드가 종료된 환경은 다른 환경의 에피소드가 끝난 것과 별개로 초기화 하고 다음 에피소드 바로 시작한다고 하는데
+    # 이런식으로 실제로 구동되는 것이 맞는지 궁금합니다.
     def _reset_idx(self, env_ids: torch.Tensor | None):
         super()._reset_idx(env_ids)
         # robot state
@@ -389,8 +399,9 @@ class FrankaCabinetEnv(DirectRLEnv):
             / (self.robot_dof_upper_limits - self.robot_dof_lower_limits)
             - 1.0
         )
+        #그리퍼 grasp 위치에서 drawer grasp 위치까지의 상대 위치 벡터
         to_target = self.drawer_grasp_pos - self.robot_grasp_pos
-
+        # concatenate(이어붙이기) 
         obs = torch.cat(
             (
                 dof_pos_scaled,
@@ -405,9 +416,15 @@ class FrankaCabinetEnv(DirectRLEnv):
 
     # auxiliary methods
 
+    # 손/서랍의 현재 위치 + 미리 정한 로컬 grasp 기준
+    # 월드 좌표계에서 실제 grasp 목표 포즈로 변환
+    # 보상/관측 계산에 쓰기 위해 버퍼에 저장
     def _compute_intermediate_values(self, env_ids: torch.Tensor | None = None):
+        
+        #env_ids is None이면 전체 env를 대상으로 계산 (self._robot._ALL_INDICES = 모든 환경 인덱스)
         if env_ids is None:
             env_ids = self._robot._ALL_INDICES
+
 
         hand_pos = self._robot.data.body_pos_w[env_ids, self.hand_link_idx]
         hand_rot = self._robot.data.body_quat_w[env_ids, self.hand_link_idx]
@@ -451,17 +468,20 @@ class FrankaCabinetEnv(DirectRLEnv):
         finger_reward_scale,
         joint_positions,
     ):
+        # 손잡이와 그리퍼 사이의 거리 보상
         # distance from hand to the drawer
         d = torch.norm(franka_grasp_pos - drawer_grasp_pos, p=2, dim=-1)
         dist_reward = 1.0 / (1.0 + d**2)
         dist_reward *= dist_reward
         dist_reward = torch.where(d <= 0.02, dist_reward * 2, dist_reward)
 
+        #로컬축을 월드 축으로 변환
         axis1 = tf_vector(franka_grasp_rot, gripper_forward_axis)
         axis2 = tf_vector(drawer_grasp_rot, drawer_inward_axis)
         axis3 = tf_vector(franka_grasp_rot, gripper_up_axis)
         axis4 = tf_vector(drawer_grasp_rot, drawer_up_axis)
 
+        #그리퍼와 손잡이 사이 축 정렬관련 보상
         dot1 = (
             torch.bmm(axis1.view(num_envs, 1, 3), axis2.view(num_envs, 3, 1)).squeeze(-1).squeeze(-1)
         )  # alignment of forward axis for gripper
@@ -471,12 +491,15 @@ class FrankaCabinetEnv(DirectRLEnv):
         # reward for matching the orientation of the hand to the drawer (fingers wrapped)
         rot_reward = 0.5 * (torch.sign(dot1) * dot1**2 + torch.sign(dot2) * dot2**2)
 
+        #큰 액션을 억제하는 패널티
         # regularization on the actions (summed for each environment)
         action_penalty = torch.sum(actions**2, dim=-1)
 
+        #열린 정도에 따른 보상
         # how far the cabinet has been opened out
         open_reward = cabinet_dof_pos[:, 3]  # drawer_top_joint
 
+        # 두 손가락이 drawer 손잡이보다 위/아래 잘못 위치하면 음수 패널티. 둘 다 0보다 작을 때만 페널티가 누적됨
         # penalty for distance of each finger from the drawer handle
         lfinger_dist = franka_lfinger_pos[:, 2] - drawer_grasp_pos[:, 2]
         rfinger_dist = drawer_grasp_pos[:, 2] - franka_rfinger_pos[:, 2]
