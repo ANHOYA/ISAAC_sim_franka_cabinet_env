@@ -368,9 +368,10 @@ class FrankaCabinetEnv(DirectRLEnv):
             self._robot.data.joint_pos,
         )
 
-    # ??????????????/???????
+    # ?
     # 여기서 env_ids 가 나오는데 먼저 에피소드가 종료된 환경은 다른 환경의 에피소드가 끝난 것과 별개로 초기화 하고 다음 에피소드 바로 시작한다고 하는데
     # 이런식으로 실제로 구동되는 것이 맞는지 궁금합니다.
+    # 한 마디로 비동기라는 것?
     def _reset_idx(self, env_ids: torch.Tensor | None):
         super()._reset_idx(env_ids)
         # robot state
