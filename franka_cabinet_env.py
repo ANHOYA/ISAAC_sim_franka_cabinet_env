@@ -28,6 +28,7 @@ class FrankaCabinetEnvCfg(DirectRLEnvCfg):
     # env
     episode_length_s = 8.3333  # 500 timesteps
     #decimation이 원래는 대량학살이라는 뜻이지만 다운샘플링의 뜻으로도 사용된다.
+    # "action이 수행될 때까지의 약간의 delay도 고려해주는 의미도 있음. 학습은 최대한 hz를 줄이고 실제 액션은 hz를 높이면 좋음 -> nvidia 문서애도 있음"
     decimation = 2 # 시뮬레이션 스텝 당 제어 스텝 수 / 여기서는 2로 설정되었으므로 2시뮬레이션 스템마다 한 번 액션이 적용됨
     action_space = 9 #Franka Emika Panda 7DOF + Gripper 2
     observation_space = 23
@@ -270,6 +271,8 @@ class FrankaCabinetEnv(DirectRLEnv):
         self.drawer_local_grasp_rot = drawer_local_grasp_pose[3:7].repeat((self.num_envs, 1))
 
         #손잡이랑 그리퍼랑 축 정렬. 잡을 수 있게.
+        # "잡았다 요놈."
+        # 엔드이펙터기준으로 3개의 축을 시각화해서 볼 수 있음. 엇낙간 축을 
         self.gripper_forward_axis = torch.tensor([0, 0, 1], device=self.device, dtype=torch.float32).repeat(
             (self.num_envs, 1)
         )
